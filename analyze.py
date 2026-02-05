@@ -398,9 +398,293 @@ def plot_phase2(input_dir, output_dir):
         print(f"{sa:>12.0%} {best_acc_m[i]:>9.4f} {final_acc_m[i]:>9.4f} {loss_m[i]:>10.4f}")
 
 
+def plot_phase4(input_dir, output_dir):
+    """Generate Phase 4 analysis plots (teacher-student critical period)."""
+    os.makedirs(output_dir, exist_ok=True)
+
+    training_files = sorted(glob.glob(os.path.join(input_dir, '*_training.csv')))
+
+    if not training_files:
+        print(f"No training CSV files found in {input_dir}")
+        return
+
+    # Group by condition
+    by_condition = defaultdict(list)
+    for tf in training_files:
+        basename = os.path.basename(tf)
+        parts = basename.replace('_training.csv', '')
+        tokens = parts.split('_seed')
+        cond_name = tokens[0]
+        by_condition[cond_name].append(load_training_csv(tf))
+
+    CONDITION_COLORS = {
+        'baseline':      '#333333',
+        'early_zero':    '#2196F3',
+        'early_kaiming': '#03A9F4',
+        'late_zero':     '#F44336',
+        'late_kaiming':  '#FF9800',
+    }
+    CONDITION_STYLES = {
+        'baseline':      '-',
+        'early_zero':    '--',
+        'early_kaiming': '-',
+        'late_zero':     '--',
+        'late_kaiming':  '-',
+    }
+
+    def get_epoch_stats(runs, key):
+        """Aggregate a metric across runs, returning (epochs, means, stds)."""
+        epoch_vals = defaultdict(list)
+        for run in runs:
+            for row in run:
+                ep = row.get('epoch')
+                val = row.get(key)
+                if ep is not None and val is not None:
+                    epoch_vals[ep].append(val)
+        epochs = sorted(epoch_vals.keys())
+        means = np.array([np.mean(epoch_vals[e]) for e in epochs])
+        stds = np.array([np.std(epoch_vals[e]) for e in epochs])
+        return np.array(epochs), means, stds
+
+    expansion_conds = [c for c in sorted(by_condition.keys()) if c != 'baseline']
+
+    # ---- Plot 1: MSE over time (primary metric) ----
+    fig, ax = plt.subplots(figsize=(12, 7))
+    for cond_name, runs in sorted(by_condition.items()):
+        epochs, means, stds = get_epoch_stats(runs, 'val_mse')
+        color = CONDITION_COLORS.get(cond_name, '#888888')
+        style = CONDITION_STYLES.get(cond_name, '-')
+        ax.plot(epochs, means, color=color, linestyle=style, label=cond_name, linewidth=2.5)
+        ax.fill_between(epochs, means - stds, means + stds, color=color, alpha=0.1)
+
+    ax.set_xlabel('Epoch', fontsize=12)
+    ax.set_ylabel('Validation MSE (lower = better)', fontsize=12)
+    ax.set_title('Teacher-Student: Validation MSE', fontsize=14, fontweight='bold')
+    ax.set_yscale('log')
+    ax.legend(fontsize=11)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'val_mse.png'), dpi=150, bbox_inches='tight')
+    plt.close()
+    print("Saved: val_mse.png")
+
+    # ---- Plot 2: Agreement accuracy over time ----
+    fig, ax = plt.subplots(figsize=(12, 7))
+    for cond_name, runs in sorted(by_condition.items()):
+        epochs, means, stds = get_epoch_stats(runs, 'val_agreement')
+        color = CONDITION_COLORS.get(cond_name, '#888888')
+        style = CONDITION_STYLES.get(cond_name, '-')
+        ax.plot(epochs, means, color=color, linestyle=style, label=cond_name, linewidth=2.5)
+        ax.fill_between(epochs, means - stds, means + stds, color=color, alpha=0.1)
+
+    ax.set_xlabel('Epoch', fontsize=12)
+    ax.set_ylabel('Agreement Accuracy', fontsize=12)
+    ax.set_title('Teacher-Student: Agreement (argmax match)', fontsize=14, fontweight='bold')
+    ax.legend(fontsize=11)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'agreement.png'), dpi=150, bbox_inches='tight')
+    plt.close()
+    print("Saved: agreement.png")
+
+    # ---- Plot 3: Training loss ----
+    fig, ax = plt.subplots(figsize=(12, 7))
+    for cond_name, runs in sorted(by_condition.items()):
+        epochs, means, stds = get_epoch_stats(runs, 'train_loss')
+        color = CONDITION_COLORS.get(cond_name, '#888888')
+        style = CONDITION_STYLES.get(cond_name, '-')
+        ax.plot(epochs, means, color=color, linestyle=style, label=cond_name, linewidth=2)
+        ax.fill_between(epochs, means - stds, means + stds, color=color, alpha=0.1)
+
+    ax.set_xlabel('Epoch', fontsize=12)
+    ax.set_ylabel('Training Loss (MSE)', fontsize=12)
+    ax.set_title('Teacher-Student: Training Loss', fontsize=14, fontweight='bold')
+    ax.set_yscale('log')
+    ax.legend(fontsize=11)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'train_loss.png'), dpi=150, bbox_inches='tight')
+    plt.close()
+    print("Saved: train_loss.png")
+
+    # ---- Plot 4: Weight integration — new vs original weight magnitude ----
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    for idx, cond_name in enumerate(expansion_conds):
+        ax = axes[idx // 2, idx % 2]
+        runs = by_condition[cond_name]
+
+        epochs_o, means_o, stds_o = get_epoch_stats(runs, 'agg_original_abs_mean')
+        epochs_n, means_n, stds_n = get_epoch_stats(runs, 'agg_new_abs_mean')
+
+        ax.plot(epochs_o, means_o, 'b-', label='Original weights', linewidth=2)
+        ax.fill_between(epochs_o, means_o - stds_o, means_o + stds_o, color='blue', alpha=0.1)
+        if len(means_n) > 0:
+            ax.plot(epochs_n, means_n, 'r-', label='New weights', linewidth=2)
+            ax.fill_between(epochs_n, means_n - stds_n, means_n + stds_n, color='red', alpha=0.1)
+
+        ax.set_title(cond_name, fontsize=12, fontweight='bold')
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Mean |weight|')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+    plt.suptitle('Weight Integration: Original vs New Weight Magnitudes',
+                 fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'weight_integration.png'), dpi=150, bbox_inches='tight')
+    plt.close()
+    print("Saved: weight_integration.png")
+
+    # ---- Plot 5: Gradient flow ----
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    for idx, cond_name in enumerate(expansion_conds):
+        ax = axes[idx // 2, idx % 2]
+        runs = by_condition[cond_name]
+
+        epochs_o, means_o, stds_o = get_epoch_stats(runs, 'agg_original_grad_abs_mean')
+        epochs_n, means_n, stds_n = get_epoch_stats(runs, 'agg_new_grad_abs_mean')
+
+        ax.plot(epochs_o, means_o, 'b-', label='Original weights', linewidth=2)
+        ax.fill_between(epochs_o, means_o - stds_o, means_o + stds_o, color='blue', alpha=0.1)
+        if len(means_n) > 0:
+            ax.plot(epochs_n, means_n, 'r-', label='New weights', linewidth=2)
+            ax.fill_between(epochs_n, means_n - stds_n, means_n + stds_n, color='red', alpha=0.1)
+
+        ax.set_title(cond_name, fontsize=12, fontweight='bold')
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Mean |gradient|')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+    plt.suptitle('Gradient Flow: Original vs New Weights',
+                 fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'gradient_flow.png'), dpi=150, bbox_inches='tight')
+    plt.close()
+    print("Saved: gradient_flow.png")
+
+    # ---- Plot 6: Integration ratio over time ----
+    fig, ax = plt.subplots(figsize=(12, 7))
+    for cond_name in expansion_conds:
+        runs = by_condition[cond_name]
+        epoch_ratios = defaultdict(list)
+        for run in runs:
+            for row in run:
+                ep = row.get('epoch')
+                new_abs = row.get('agg_new_abs_mean')
+                orig_abs = row.get('agg_original_abs_mean')
+                if ep is not None and new_abs is not None and orig_abs is not None and orig_abs > 0:
+                    epoch_ratios[ep].append(new_abs / orig_abs)
+
+        if epoch_ratios:
+            eps = sorted(epoch_ratios.keys())
+            means = np.array([np.mean(epoch_ratios[e]) for e in eps])
+            stds = np.array([np.std(epoch_ratios[e]) for e in eps])
+            color = CONDITION_COLORS.get(cond_name, '#888')
+            style = CONDITION_STYLES.get(cond_name, '-')
+            ax.plot(eps, means, color=color, linestyle=style, label=cond_name, linewidth=2.5)
+            ax.fill_between(eps, means - stds, means + stds, color=color, alpha=0.1)
+
+    ax.axhline(y=1.0, color='gray', linestyle=':', linewidth=1, label='Parity (1.0)')
+    ax.set_xlabel('Epoch', fontsize=12)
+    ax.set_ylabel('New / Original Weight Magnitude Ratio', fontsize=12)
+    ax.set_title('Weight Integration Ratio (1.0 = full integration)',
+                 fontsize=14, fontweight='bold')
+    ax.legend(fontsize=11)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'integration_ratio.png'), dpi=150, bbox_inches='tight')
+    plt.close()
+    print("Saved: integration_ratio.png")
+
+    # ---- Plot 7: Final MSE bar chart ----
+    summary_files = sorted(glob.glob(os.path.join(input_dir, '*_summary.json')))
+    if summary_files:
+        summaries = defaultdict(list)
+        for sf in summary_files:
+            with open(sf) as f:
+                s = json.load(f)
+            summaries[s['condition']].append(s)
+
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+        conds = sorted(summaries.keys())
+        x = np.arange(len(conds))
+
+        best_means = [np.mean([s['best_mse'] for s in summaries[c]]) for c in conds]
+        best_stds = [np.std([s['best_mse'] for s in summaries[c]]) for c in conds]
+        final_means = [np.mean([s['final_mse'] for s in summaries[c]]) for c in conds]
+        final_stds = [np.std([s['final_mse'] for s in summaries[c]]) for c in conds]
+        agree_means = [np.mean([s['final_agreement'] for s in summaries[c]]) for c in conds]
+        agree_stds = [np.std([s['final_agreement'] for s in summaries[c]]) for c in conds]
+
+        bar_colors = [CONDITION_COLORS.get(c, '#888') for c in conds]
+
+        ax1.bar(x - 0.2, best_means, 0.35, yerr=best_stds, capsize=4,
+                label='Best', color=bar_colors, alpha=0.8)
+        ax1.bar(x + 0.2, final_means, 0.35, yerr=final_stds, capsize=4,
+                label='Final', color=bar_colors, alpha=0.5)
+        ax1.set_xticks(x)
+        ax1.set_xticklabels(conds, rotation=30, ha='right')
+        ax1.set_ylabel('MSE (lower = better)')
+        ax1.set_title('Best & Final MSE by Condition', fontweight='bold')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3, axis='y')
+
+        ax2.bar(x, agree_means, yerr=agree_stds, capsize=4, color=bar_colors, alpha=0.7)
+        ax2.set_xticks(x)
+        ax2.set_xticklabels(conds, rotation=30, ha='right')
+        ax2.set_ylabel('Agreement Accuracy')
+        ax2.set_title('Final Agreement (argmax match)', fontweight='bold')
+        ax2.grid(True, alpha=0.3, axis='y')
+
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, 'final_performance.png'), dpi=150, bbox_inches='tight')
+        plt.close()
+        print("Saved: final_performance.png")
+
+    # ---- Summary table ----
+    print("\n" + "=" * 80)
+    print("PHASE 4 SUMMARY: TEACHER-STUDENT CRITICAL PERIOD")
+    print("=" * 80)
+    if summary_files:
+        print(f"{'Condition':<18} {'Seeds':>5} {'Best MSE':>10} {'Final MSE':>10} "
+              f"{'Agreement':>10} {'Pre-Exp MSE':>12}")
+        print("-" * 70)
+        for c in conds:
+            runs = summaries[c]
+            n = len(runs)
+            best = np.mean([s['best_mse'] for s in runs])
+            best_s = np.std([s['best_mse'] for s in runs])
+            final = np.mean([s['final_mse'] for s in runs])
+            agree = np.mean([s['final_agreement'] for s in runs])
+            pre_exps = [s['pre_expand_mse'] for s in runs if s['pre_expand_mse'] is not None]
+            pre = f"{np.mean(pre_exps):.6f}" if pre_exps else "       N/A"
+            print(f"{c:<18} {n:>5} {best:>9.6f}+/-{best_s:.6f} {final:>9.6f} "
+                  f"{agree:>9.4f} {pre:>12}")
+
+        print("\nKey question: Does late_kaiming match early_kaiming?")
+        if 'late_kaiming' in summaries and 'early_kaiming' in summaries:
+            late_k = np.mean([s['best_mse'] for s in summaries['late_kaiming']])
+            early_k = np.mean([s['best_mse'] for s in summaries['early_kaiming']])
+            diff = late_k - early_k
+            if abs(diff) < 0.001:
+                print(f"  late_kaiming - early_kaiming = {diff:+.6f}  --> SIMILAR (no critical period)")
+            elif diff > 0.001:
+                print(f"  late_kaiming - early_kaiming = {diff:+.6f}  --> LATE IS WORSE (critical period!)")
+            else:
+                print(f"  late_kaiming - early_kaiming = {diff:+.6f}  --> LATE IS BETTER (unexpected)")
+
+        if 'baseline' in summaries and 'late_kaiming' in summaries:
+            base = np.mean([s['best_mse'] for s in summaries['baseline']])
+            late_k = np.mean([s['best_mse'] for s in summaries['late_kaiming']])
+            diff = late_k - base
+            print(f"  late_kaiming - baseline = {diff:+.6f}  "
+                  f"({'late worse' if diff > 0 else 'late better'})")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Analyze sparsity headroom experiments")
-    parser.add_argument('--phase', type=int, required=True, choices=[1, 2, 3])
+    parser.add_argument('--phase', type=int, required=True, choices=[1, 2, 3, 4])
     parser.add_argument('--input_dir', type=str, required=True)
     parser.add_argument('--output_dir', type=str, default=None,
                         help='Output dir for plots (defaults to input_dir/plots)')
@@ -415,6 +699,8 @@ def main():
         plot_phase2(args.input_dir, args.output_dir)
     elif args.phase == 3:
         plot_phase3(args.input_dir, args.output_dir)
+    elif args.phase == 4:
+        plot_phase4(args.input_dir, args.output_dir)
 
 
 def plot_phase3(input_dir, output_dir):

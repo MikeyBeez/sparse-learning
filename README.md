@@ -1,109 +1,112 @@
 # Do Neural Networks Have Critical Periods for Structural Change?
 
-Experiments investigating whether neural networks resist incorporating new weights after early training — a "critical period" for structural plasticity — or whether poor integration of late-arriving weights is simply an artifact of zero initialization.
+Experiments investigating whether neural networks resist incorporating new weights after early training — a "critical period" for structural plasticity — and whether initialization method matters more than timing.
 
 ## The Question
 
-When you add new weights to a partially-trained network, do they integrate into the learned computation? The answer depends on *when* you add them:
+When you add new weights to a partially-trained network, do they integrate into the learned computation? The answer depends on *when* you add them and *how* you initialize them — but not in the way you'd expect.
 
-- **Early in training** (epoch 10/100): new weights reach **87-91%** of original weight magnitude
-- **Late in training** (epoch 50/100): new weights reach only **50-55%**, regardless of how they're initialized
+## Phase 4: Teacher-Student (The Clean Experiment)
 
-This gap is the central finding. But does it matter for what the network actually learns?
+Phase 3 (below) was confounded by overfitting. Phase 4 fixes this with a synthetic teacher-student task where capacity is provably the bottleneck.
 
-## Experimental Design
+### Setup
 
-### Phase 3: The Critical Period Experiment (2x2 Factorial)
+- **Teacher**: Random frozen MLP (100 → 256 → 128 → 10), fixed weights
+- **Student**: Same architecture with masked weights (`MaskedMLP`, `oversized_factor=1.0`)
+- **Data**: 50k fresh random N(0,1) inputs per epoch (infinite data = zero overfitting), 10k fixed validation set
+- **Metric**: MSE to teacher's outputs (regression, not classification)
+- At 60% capacity, the student provably cannot represent the teacher's function. At 100%, it can.
 
-All conditions use the same architecture: a 3-layer MLP with 1.5x oversized hidden dimensions (3072 → 1536/768/384 → 10), trained on CIFAR-10 for 100 epochs with Adam (lr=1e-3).
+Same 2x2 design: (early/late) × (zero/kaiming) + baseline, 200 epochs, 3 seeds.
+
+### Results: Init method dominates; no critical period
+
+![Validation MSE](figures/phase4/val_mse.png)
+
+![Final Performance](figures/phase4/final_performance.png)
+
+| Condition | Best MSE | Final Agreement | Integration Ratio @ 200 |
+|---|---|---|---|
+| **early_zero** | **0.000302 ± 0.000039** | **0.880** | 0.93 |
+| **late_zero** | **0.000323 ± 0.000048** | **0.880** | 0.90 |
+| baseline | 0.000510 ± 0.000035 | 0.847 | — |
+| late_kaiming | 0.000639 ± 0.000041 | 0.835 | 1.05 |
+| early_kaiming | 0.000678 ± 0.000006 | 0.827 | 1.17 |
+
+**The big surprise: zero-init expansion beats everything, including baseline.**
+
+- `early_zero` achieves 41% lower MSE than baseline (0.000302 vs 0.000510)
+- `late_zero` achieves 37% lower MSE than baseline (0.000323 vs 0.000510)
+- Kaiming init is *worse* than baseline — it disrupts the learned computation
+- **Timing barely matters**: early_zero ≈ late_zero, early_kaiming ≈ late_kaiming
+
+### No critical period — init method is everything
+
+![Agreement Accuracy](figures/phase4/agreement.png)
+
+The 2x2 design was supposed to separate timing from initialization. It did — and timing lost. There is no critical period effect. The dominant factor is whether new weights preserve or disrupt the existing computation:
+
+- **Zero init = preserve**: New weights start at zero, meaning the network's function is unchanged at expansion. The new weights then gradually learn to correct residual errors, building on the existing representation. This acts like progressive learning.
+- **Kaiming init = disrupt**: Random initialization injects noise proportional to layer width. MSE immediately *jumps up* at expansion (+0.0007-0.0008), and the network never fully recovers.
+
+### Why zero-init beats baseline
+
+This is the most surprising finding. Starting with 60% capacity and zero-expanding to 100% *outperforms* having all weights from the start. The mechanism:
+
+1. The 60%-capacity phase forces the network to learn a compact, efficient core representation
+2. Zero-initialized new weights don't disrupt this core — they start as identity-like additions
+3. The new weights then learn complementary features that correct residual errors
+4. This progressive structure acts as implicit regularization — similar to progressive growing in GANs or curriculum learning
+
+The baseline, with all weights competing from epoch 1, never develops this structured decomposition into "core" and "correction" components.
+
+### Weight integration
+
+![Weight Integration](figures/phase4/weight_integration.png)
+
+![Integration Ratio](figures/phase4/integration_ratio.png)
+
+Zero-init weights gradually grow to ~90-93% of original weight magnitude. Kaiming-init weights *start* at ~1.3-1.7x original magnitude (they're too big!) and slowly converge toward 1.0x but always remain above parity — they dominate the computation rather than complementing it.
+
+### Gradient flow
+
+![Gradient Flow](figures/phase4/gradient_flow.png)
+
+Both init methods receive comparable gradients. The difference is entirely about the starting point and its interaction with the learned loss landscape.
+
+## Phase 3: Critical Period on CIFAR-10 (Confounded)
+
+### Design
+
+3-layer MLP with 1.5x oversized hidden dims (3072 → 1536/768/384 → 10), CIFAR-10, 100 epochs.
 
 | | Zero Init | Kaiming Init |
 |---|---|---|
-| **Early** (epoch 10) | Start 60% active, expand to 100% at epoch 10. New weights = 0. | Same, but new weights ~ N(0, sqrt(2/fan_in)). |
-| **Late** (epoch 50) | Start 60% active, expand to 100% at epoch 50. New weights = 0. | Same, but new weights ~ N(0, sqrt(2/fan_in)). |
+| **Early** (epoch 10) | Start 60%, expand at epoch 10. New = 0. | New ~ N(0, sqrt(2/fan_in)). |
+| **Late** (epoch 50) | Start 60%, expand at epoch 50. New = 0. | New ~ N(0, sqrt(2/fan_in)). |
 
-Plus a **baseline**: 100% active from epoch 0.
+Plus baseline (100% from start).
 
-The 2x2 design cleanly separates two hypotheses:
-- If late+Kaiming integrates fine but late+zero doesn't → it's just bad initialization (boring)
-- If late+Kaiming ALSO fails to integrate → real critical period (interesting)
+### Results
 
-### Tracking
+![Integration Ratio (Phase 3)](figures/integration_ratio.png)
 
-For each condition, we separately track **original** vs **newly-activated** weights:
-- Weight magnitude (mean |w|) over training
-- Gradient magnitude (mean |g|) over training
-- The **integration ratio**: new weight magnitude / original weight magnitude
-- Validation accuracy and generalization gap (train acc - val acc)
+Weight integration showed a clear timing effect: early weights reached 87-91% of original magnitude, late weights only 50-55%.
 
-## Results
+**But performance was indistinguishable** — all conditions converged to ~56-57% with a 36% generalization gap. The MLP architecture caps out at ~57% on CIFAR-10 regardless of parameter count. At 60% capacity the network is already overparameterized for what the architecture can learn.
 
-### Weight integration shows a clear timing effect
-
-![Integration Ratio](figures/integration_ratio.png)
-
-Early-arriving weights (blue) approach parity with original weights. Late-arriving weights (orange/red) plateau at roughly half the magnitude of originals — and the curve is still rising at epoch 100, suggesting they'd eventually catch up given enough time, but at a fundamentally slower rate.
-
-Kaiming initialization provides a ~4% bonus over zero initialization in both early and late conditions, but **timing dominates init method**.
-
-### Performance is indistinguishable
-
-![Validation Accuracy](figures/val_accuracy.png)
-
-![Final Accuracy](figures/final_accuracy.png)
-
-| Condition | Best Val Acc | Integration Ratio @ 100 |
-|---|---|---|
-| baseline | 56.8 +/- 0.4% | — |
-| early_kaiming | 57.2 +/- 0.3% | 0.91 |
-| early_zero | 56.8 +/- 0.1% | 0.88 |
-| late_kaiming | 56.7 +/- 0.2% | 0.55 |
-| late_zero | 56.6 +/- 0.1% | 0.50 |
-
-All conditions converge to ~56-57% validation accuracy. The 36% generalization gap (92% train, 56% val) shows massive overfitting — the network has far more capacity than it needs, even at 60% active weights.
-
-### Gradient flow to new weights
-
-![Gradient Flow](figures/gradient_flow.png)
-
-New weights receive gradients of comparable magnitude to original weights in all conditions. The issue isn't that late weights are gradient-starved — it's that the gradients don't drive them to the same magnitudes. The loss landscape has changed.
-
-## Interpretation
-
-The experiment lands in the ambiguous middle:
-
-**The integration signal is real.** Late weights grow slower, plateau lower, and never catch original weights within the training horizon. This is consistent across all seeds and both init methods. The gradient landscape genuinely treats late-arriving weights differently.
-
-**But it doesn't affect this task.** The network achieves the same accuracy regardless. A simple MLP on CIFAR-10 is already overparameterized at 60% capacity — the extra weights are just overfitting fuel.
-
-**To disambiguate**, you'd need a regime where extra capacity actually helps:
-- A harder task or smaller architecture where 60% capacity isn't enough
-- Regularization to control overfitting so added capacity could improve generalization
-- A different metric — e.g., does the *function* the network computes change when late weights are added?
-
-### Related Work
-
-This connects to Frankle et al.'s work on lottery tickets and critical periods in training ("The Lottery Ticket Hypothesis: Finding Sparse, Trainable Neural Networks," 2019; "Stabilizing the Lottery Ticket Hypothesis," 2019). The weight rewinding results in particular suggest that early training establishes structure that later training refines but doesn't fundamentally alter. Our integration ratio measurements provide direct evidence for this structural rigidity.
+This is why Phase 4 uses a teacher-student task where capacity is the actual bottleneck.
 
 ## Earlier Phases
 
 ### Phase 1: Observing Natural Sparsity
 
-**Finding:** Standard training with Adam in float32 produces zero exact zeros. Near-zero weights (|w| < 1e-3) are 1-2% of total and *decrease* during training as weight magnitudes grow monotonically.
-
-```bash
-python3 observe.py --epochs 50 --seeds 5
-```
+Standard training with Adam in float32 produces zero exact zeros. Near-zero weights (|w| < 1e-3) are 1-2% of total and *decrease* during training.
 
 ### Phase 2: Capacity Growth Schedules
 
-Tests whether the *trajectory* of capacity utilization matters: does starting with fewer active weights and gradually growing outperform using all weights from the start?
-
-Five conditions (60%, 70%, 80%, 90%, 100% initial active fraction) with linear growth to 100% by epoch 75.
-
-```bash
-python3 maintain.py --dataset cifar10 --start_active 0.6 0.7 0.8 0.9 1.0
-```
+Five conditions (60-100% initial active fraction) with linear growth to 100% by epoch 75. No significant performance differences — same overfitting confound as Phase 3.
 
 ## Usage
 
@@ -116,22 +119,23 @@ matplotlib
 numpy
 ```
 
-### Running the critical period experiment
+### Running the teacher-student experiment (Phase 4)
 
 ```bash
-# Full 2x2 experiment (5 conditions x 3 seeds, ~2 hours on GPU)
-python3 critical_period.py --dataset cifar10 --epochs 100 --seeds 3
+# Full experiment (5 conditions x 3 seeds x 200 epochs, ~10 min on GPU)
+python3 teacher_student.py --epochs 200 --seeds 3
 
 # Single condition
-python3 critical_period.py --conditions late_kaiming --seeds 1
+python3 teacher_student.py --conditions late_zero --seeds 1
 
-# Custom timing
-python3 critical_period.py --early_epoch 5 --late_epoch 75
+# Generate plots
+python3 analyze.py --phase 4 --input_dir results/phase4_teacher_student
 ```
 
-### Generating plots
+### Running the CIFAR-10 experiment (Phase 3)
 
 ```bash
+python3 critical_period.py --dataset cifar10 --epochs 100 --seeds 3
 python3 analyze.py --phase 3 --input_dir results/phase3_cifar10
 ```
 
@@ -142,6 +146,14 @@ models.py            # MaskedLinear, MaskedMLP — masked weight layers with int
 utils.py             # SparsityTracker — recording weight/gradient statistics over training
 observe.py           # Phase 1: natural sparsity observation
 maintain.py          # Phase 2: capacity growth schedules
-critical_period.py   # Phase 3: 2x2 critical period experiment
+critical_period.py   # Phase 3: 2x2 critical period experiment (CIFAR-10)
+teacher_student.py   # Phase 4: 2x2 critical period experiment (teacher-student)
 analyze.py           # Plotting and analysis for all phases
 ```
+
+## Related Work
+
+- Frankle et al., "The Lottery Ticket Hypothesis" (2019) — sparse subnetworks can train to full accuracy
+- Frankle et al., "Stabilizing the Lottery Ticket Hypothesis" (2019) — weight rewinding to early training
+- Achille et al., "Critical Learning Periods in Deep Networks" (2019) — information-theoretic view of critical periods
+- Our results add a new angle: the "critical period" effect in weight integration (Phase 3) disappears when you control for overfitting (Phase 4). What remains is an init-method effect where zero init acts as implicit progressive regularization.
