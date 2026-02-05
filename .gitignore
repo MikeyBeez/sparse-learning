@@ -1,0 +1,16 @@
+# Data and results
+data/
+results/
+__pycache__/
+*.pyc
+
+# Model checkpoints
+*.pt
+*.pth
+
+# Editor/OS
+.DS_Store
+*.swp
+*~
+.vscode/
+.idea/
