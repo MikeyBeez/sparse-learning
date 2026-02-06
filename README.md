@@ -2,6 +2,8 @@
 
 Experiments investigating whether neural networks resist incorporating new weights after early training — a "critical period" for structural plasticity — and whether initialization method matters more than timing.
 
+**Paper**: [Progressive Capacity Expansion Outperforms Full-Capacity Training](papers/critical_periods_paper.md)
+
 ## The Question
 
 When you add new weights to a partially-trained network, do they integrate into the learned computation? The answer depends on *when* you add them and *how* you initialize them — but not in the way you'd expect.
@@ -98,6 +100,31 @@ Weight integration showed a clear timing effect: early weights reached 87-91% of
 
 This is why Phase 4 uses a teacher-student task where capacity is the actual bottleneck.
 
+## Automatic Saturation Detection
+
+Can we detect when a layer has saturated its current capacity and trigger expansion automatically?
+
+### The Signal
+
+At 60% first-layer capacity, gradient norm drops from ~0.022 (epoch 1) to ~0.013 (epoch 200) while MSE plateaus at ~0.0011 — well above the 0.0005 achievable at full capacity. This is the saturation signature.
+
+### Auto-Expansion Results
+
+| Condition | Best MSE | Expansion Epoch | vs Baseline |
+|-----------|----------|-----------------|-------------|
+| **auto_expand** | 0.000430 ± 0.000043 | 71 ± 2 | **-18%** |
+| fixed_early | 0.000438 ± 0.000029 | 20 | -16% |
+| fixed_late | 0.000440 ± 0.000036 | 100 | -16% |
+| baseline | 0.000525 ± 0.000010 | — | — |
+
+The automatic trigger (gradient norm < 0.0154) fires consistently at epoch 68-73 across 5 seeds and matches or beats fixed-timing baselines. **Timing can be learned, not tuned.**
+
+```bash
+# Run saturation detection experiment
+python3 experiments/saturation_detection.py --phase 1 --epochs 200 --seeds 3  # Characterize
+python3 experiments/saturation_detection.py --phase 3 --epochs 200 --seeds 5  # Auto-expand
+```
+
 ## Earlier Phases
 
 ### Phase 1: Observing Natural Sparsity
@@ -142,18 +169,28 @@ python3 analyze.py --phase 3 --input_dir results/phase3_cifar10
 ## File Structure
 
 ```
-models.py            # MaskedLinear, MaskedMLP — masked weight layers with integration tracking
-utils.py             # SparsityTracker — recording weight/gradient statistics over training
-observe.py           # Phase 1: natural sparsity observation
-maintain.py          # Phase 2: capacity growth schedules
-critical_period.py   # Phase 3: 2x2 critical period experiment (CIFAR-10)
-teacher_student.py   # Phase 4: 2x2 critical period experiment (teacher-student)
-analyze.py           # Plotting and analysis for all phases
+models.py                           # MaskedLinear, MaskedMLP — masked weight layers
+utils.py                            # SparsityTracker — recording weight/gradient statistics
+observe.py                          # Phase 1: natural sparsity observation
+maintain.py                         # Phase 2: capacity growth schedules
+critical_period.py                  # Phase 3: 2x2 critical period (CIFAR-10)
+teacher_student.py                  # Phase 4: 2x2 critical period (teacher-student)
+analyze.py                          # Plotting and analysis for all phases
+experiments/saturation_detection.py # Automatic saturation detection and expansion
+papers/critical_periods_paper.md    # Full paper writeup
 ```
+
+## Key Findings
+
+1. **No critical period for structural plasticity** — timing of weight addition has no effect when confounds are controlled
+2. **Zero-init expansion beats baseline by 41%** — progressive capacity growth acts as implicit regularization
+3. **Kaiming init disrupts learned computation** — random initialization is harmful, not helpful, for expansion
+4. **Saturation can be detected automatically** — gradient-norm triggers fire consistently and match hand-tuned timing
 
 ## Related Work
 
 - Frankle et al., "The Lottery Ticket Hypothesis" (2019) — sparse subnetworks can train to full accuracy
 - Frankle et al., "Stabilizing the Lottery Ticket Hypothesis" (2019) — weight rewinding to early training
 - Achille et al., "Critical Learning Periods in Deep Networks" (2019) — information-theoretic view of critical periods
-- Our results add a new angle: the "critical period" effect in weight integration (Phase 3) disappears when you control for overfitting (Phase 4). What remains is an init-method effect where zero init acts as implicit progressive regularization.
+- Karras et al., "Progressive Growing of GANs" (2018) — adding capacity during training
+- Our results add a new angle: the "critical period" effect in weight integration (Phase 3) disappears when you control for overfitting (Phase 4). What remains is an init-method effect where zero init acts as implicit progressive regularization — and the optimal timing can be detected automatically.
